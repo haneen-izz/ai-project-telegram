@@ -1,17 +1,21 @@
 import os
+import json
 from datetime import datetime
+
 from googleapiclient.discovery import build
 from google.oauth2.service_account import Credentials
+
 from huggingface_hub import InferenceClient
 
 from telegram import Update
 from telegram.ext import Application, MessageHandler, CommandHandler, filters, ContextTypes
 
+
 # ================== ENV SAFETY ==================
-def get_env(key, default=None):
-    value = os.getenv(key, default)
-    if value is None:
-        raise ValueError(f"Missing ENV variable: {key}")
+def get_env(key):
+    value = os.getenv(key)
+    if not value:
+        raise ValueError(f"Missing ENV: {key}")
     return value
 
 
@@ -20,15 +24,20 @@ SHEET_NAME = get_env("SHEET_NAME")
 
 TELEGRAM_BOT_TOKEN = get_env("TELEGRAM_BOT_TOKEN")
 HUGGINGFACEHUB_API_TOKEN = get_env("HUGGINGFACEHUB_API_TOKEN")
-GOOGLE_SHEETS_CREDS_FILE = get_env("GOOGLE_SHEETS_CREDS_FILE")
+
+GOOGLE_CREDENTIALS_JSON = get_env("GOOGLE_CREDENTIALS_JSON")
 
 SCOPES = ["https://www.googleapis.com/auth/spreadsheets"]
 
-# ================== GOOGLE SHEETS ==================
-creds = Credentials.from_service_account_file(
-    GOOGLE_SHEETS_CREDS_FILE,
+
+# ================== GOOGLE SHEETS AUTH ==================
+creds_info = json.loads(GOOGLE_CREDENTIALS_JSON)
+
+creds = Credentials.from_service_account_info(
+    creds_info,
     scopes=SCOPES
 )
+
 
 def get_service():
     return build("sheets", "v4", credentials=creds)
@@ -50,6 +59,7 @@ client = InferenceClient(
     model="mistralai/Mistral-7B-Instruct-v0.2",
     token=HUGGINGFACEHUB_API_TOKEN
 )
+
 
 def analyze_problem(text):
     prompt = f"""
@@ -102,30 +112,35 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     step = user_state[user_id]["step"]
 
+    # NAME
     if step == "name":
         user_state[user_id]["name"] = text
         user_state[user_id]["step"] = "phone"
         await update.message.reply_text("📞 اكتب رقم الهاتف")
         return
 
+    # PHONE
     if step == "phone":
         user_state[user_id]["phone"] = text
         user_state[user_id]["step"] = "email"
         await update.message.reply_text("📧 اكتب الإيميل")
         return
 
+    # EMAIL
     if step == "email":
         user_state[user_id]["email"] = text
         user_state[user_id]["step"] = "car"
         await update.message.reply_text("🚗 اكتب نوع السيارة")
         return
 
+    # CAR
     if step == "car":
         user_state[user_id]["car"] = text
         user_state[user_id]["step"] = "problem"
         await update.message.reply_text("🔧 اكتب المشكلة")
         return
 
+    # PROBLEM
     if step == "problem":
 
         name = user_state[user_id]["name"]
@@ -147,18 +162,18 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "Pending"
         ])
 
-        await update.message.reply_text(
-            f"""🚗 تم استلام طلبك يا {name}
+        await update.message.reply_text(f"""
+🚗 تم استلام طلبك يا {name}
 
 📞 {phone}
 📧 {email}
 🚗 {car}
 
-🧠 تحليل:
+🧠 تحليل المشكلة:
 {ai_result}
 
-📌 الحالة: Pending"""
-        )
+📌 الحالة: Pending
+""")
 
         user_state[user_id] = {"step": "name"}
 
