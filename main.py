@@ -11,7 +11,7 @@ from telegram import Update
 from telegram.ext import Application, MessageHandler, CommandHandler, filters, ContextTypes
 
 
-# ================== ENV SAFETY ==================
+# ================== ENV ==================
 def get_env(key):
     value = os.getenv(key)
     if not value:
@@ -30,7 +30,7 @@ GOOGLE_CREDENTIALS_JSON = get_env("GOOGLE_CREDENTIALS_JSON")
 SCOPES = ["https://www.googleapis.com/auth/spreadsheets"]
 
 
-# ================== GOOGLE SHEETS AUTH ==================
+# ================== GOOGLE ==================
 creds_info = json.loads(GOOGLE_CREDENTIALS_JSON)
 
 creds = Credentials.from_service_account_info(
@@ -44,17 +44,40 @@ def get_service():
 
 
 def save_to_sheet(row):
+    try:
+        service = get_service()
+
+        service.spreadsheets().values().append(
+            spreadsheetId=SPREADSHEET_ID,
+            range=SHEET_NAME,
+            valueInputOption="RAW",
+            body={"values": [row]}
+        ).execute()
+
+        print("✅ Saved:", row)
+
+    except Exception as e:
+        print("❌ Sheet error:", e)
+
+
+def get_last_order(user_id):
     service = get_service()
 
-    service.spreadsheets().values().append(
+    result = service.spreadsheets().values().get(
         spreadsheetId=SPREADSHEET_ID,
-        range=SHEET_NAME,
-        valueInputOption="RAW",
-        body={"values": [row]}
+        range=SHEET_NAME
     ).execute()
 
+    rows = result.get("values", [])
 
-# ================== AI (HUGGING FACE) ==================
+    for row in reversed(rows):
+        if len(row) > 8 and row[8] == str(user_id):
+            return row
+
+    return None
+
+
+# ================== AI ==================
 client = InferenceClient(
     model="mistralai/Mistral-7B-Instruct-v0.2",
     token=HUGGINGFACEHUB_API_TOKEN
@@ -63,27 +86,28 @@ client = InferenceClient(
 
 def analyze_problem(text):
     prompt = f"""
-أنت مساعد كراج سيارات ذكي.
+أنت خبير سيارات.
 
-حلل المشكلة بالعربية فقط:
+حلل كلام المستخدم حتى لو كان عشوائي:
 
-1. نوع المشكلة
-2. الخطورة (منخفض / متوسط / عالي)
-3. الحل المقترح
+- استخرج نوع المشكلة
+- مستوى الخطورة
+- نصيحة سريعة
 
-المشكلة:
+رد بالعربي فقط.
+
+النص:
 {text}
 """
 
     try:
         return client.text_generation(
             prompt,
-            max_new_tokens=250,
+            max_new_tokens=200,
             temperature=0.7
         )
-    except Exception as e:
-        print("AI error:", e)
-        return "تم استلام الطلب وسيتم مراجعته قريباً 🚗"
+    except:
+        return "تم استلام طلبك 🚗"
 
 
 # ================== MEMORY ==================
@@ -95,81 +119,86 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.message.from_user.id
     user_state[user_id] = {"step": "name"}
 
-    await update.message.reply_text(
-        "🚗 أهلاً بك في Garage AI Bot\nاكتب اسمك الكامل"
-    )
+    await update.message.reply_text("🚗 أهلاً! اكتب اسمك")
 
 
-# ================== FLOW ==================
+# ================== MAIN LOGIC ==================
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.message.from_user.id
-    text = update.message.text
+    text = update.message.text.lower()
 
+    # 🔥 حالة الطلب
+    if "حالة" in text or "طلبي" in text:
+        order = get_last_order(user_id)
+
+        if order:
+            await update.message.reply_text(f"""
+📋 آخر طلب:
+
+🚗 السيارة: {order[4]}
+🔧 المشكلة: {order[5]}
+
+📌 الحالة: {order[7]}
+""")
+        else:
+            await update.message.reply_text("❌ ما عندك طلبات")
+        return
+
+    # 🔥 أول مرة
     if user_id not in user_state:
         user_state[user_id] = {"step": "name"}
-        await update.message.reply_text("🚗 اكتب اسمك الكامل")
+        await update.message.reply_text("اكتب اسمك")
         return
 
     step = user_state[user_id]["step"]
 
-    # NAME
     if step == "name":
         user_state[user_id]["name"] = text
         user_state[user_id]["step"] = "phone"
-        await update.message.reply_text("📞 اكتب رقم الهاتف")
+        await update.message.reply_text("📞 رقمك؟")
         return
 
-    # PHONE
     if step == "phone":
         user_state[user_id]["phone"] = text
         user_state[user_id]["step"] = "email"
-        await update.message.reply_text("📧 اكتب الإيميل")
+        await update.message.reply_text("📧 ايميلك؟")
         return
 
-    # EMAIL
     if step == "email":
         user_state[user_id]["email"] = text
         user_state[user_id]["step"] = "car"
-        await update.message.reply_text("🚗 اكتب نوع السيارة")
+        await update.message.reply_text("🚗 نوع السيارة؟")
         return
 
-    # CAR
     if step == "car":
         user_state[user_id]["car"] = text
         user_state[user_id]["step"] = "problem"
-        await update.message.reply_text("🔧 اكتب المشكلة")
+        await update.message.reply_text("🔧 احكي المشكلة بأي طريقة")
         return
 
-    # PROBLEM
     if step == "problem":
 
-        name = user_state[user_id]["name"]
-        phone = user_state[user_id]["phone"]
-        email = user_state[user_id]["email"]
-        car = user_state[user_id]["car"]
+        data = user_state[user_id]
 
         ai_result = analyze_problem(text)
         timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
         save_to_sheet([
             timestamp,
-            name,
-            phone,
-            email,
-            car,
+            data["name"],
+            data["phone"],
+            data["email"],
+            data["car"],
             text,
             ai_result,
-            "Pending"
+            "Pending",
+            str(user_id)  # 🔥 مهم
         ])
 
         await update.message.reply_text(f"""
-🚗 تم استلام طلبك يا {name}
+🚗 تم تسجيل طلبك
 
-📞 {phone}
-📧 {email}
-🚗 {car}
-
-🧠 تحليل المشكلة:
+🧠 التحليل:
 {ai_result}
 
 📌 الحالة: Pending
@@ -185,7 +214,7 @@ def main():
     app.add_handler(CommandHandler("start", start))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
 
-    print("🚗 Bot Running (Production Ready)")
+    print("🚗 Bot Running")
     app.run_polling()
 
 
