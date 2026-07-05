@@ -1,10 +1,8 @@
 python-telegram-bot==20.7
 google-api-python-client
 google-auth
-google-auth-httplib2
-google-auth-oauthlib
 python-dotenv
-langchain
+requests
+langchain==0.1.20
 langchain-google-genai
 huggingface_hub
-requests
